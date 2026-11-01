@@ -40,6 +40,7 @@ object DictationStatistics {
         var local = 0L
         var cloud = 0L
         val today = LocalDate.now()
+        var todayWords = 0L
         var weekWords = 0L
         var monthWords = 0L
         val dates = data.keys()
@@ -55,13 +56,14 @@ object DictationStatistics {
             cloud += day.optLong("cloudCount")
             val date = try { LocalDate.parse(key) } catch (_: Exception) { null }
             if (date != null) {
+                if (date == today) todayWords += w
                 if (!date.isBefore(today.minusDays(6)) && !date.isAfter(today)) weekWords += w
                 if (date.year == today.year && date.month == today.month) monthWords += w
             }
         }
         val wpm = if (speech > 0) words * 60000 / speech else 0
         val avgMs = if (count > 0) processing / count else 0
-        return "Mots dictés : $words\nCette semaine : $weekWords\nCe mois : $monthWords\n" +
+        return "TOTAL DEPUIS LE DÉBUT : $words mots\n\nAujourd’hui : $todayWords\nCette semaine : $weekWords\nCe mois : $monthWords\n" +
             "Dictées : $count\nTemps de parole : ${speech / 60000} min ${(speech / 1000) % 60} s\n" +
             "Vitesse moyenne : $wpm mots/min\nTranscription moyenne : $avgMs ms\n" +
             "Local : $local • Groq : $cloud\n\nStatistiques conservées uniquement sur cet appareil."
