@@ -813,6 +813,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private var statsRecordingStartMs = 0L
+    private var statsAudioDurationMs = 0L
+    private var statsTranscriptionStartMs = 0L
+    private var statsEngine = "cloud"
+
     private fun startRecording() {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -838,6 +843,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         pcmStream = ByteArrayOutputStream()
         audioRecord!!.startRecording()
         state = State.RECORDING
+        statsRecordingStartMs = android.os.SystemClock.elapsedRealtime()
         setBusy(false)
         setRecordingLook(true) // [ui]
         setIcon(R.drawable.ic_mic)
@@ -879,6 +885,10 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val pcm = pcmStream?.toByteArray() ?: ByteArray(0)
         pcmStream = null
+        // Audio duration comes from actual PCM samples, not wall time.
+        statsAudioDurationMs = pcm.size.toLong() * 1000 / (SAMPLE_RATE * 2)
+        statsTranscriptionStartMs = android.os.SystemClock.elapsedRealtime()
+        statsEngine = if (prefs().getBoolean("use_local", true)) "local" else "cloud"
 
         if (pcm.isEmpty() || peakAmplitude(pcm) < SILENCE_PEAK) { reset(getString(R.string.no_audio_captured)); return }
 
@@ -974,6 +984,10 @@ class WhisperAccessibilityService : AccessibilityService() {
             }
             return
         }
+
+        // Count only successful transcripts. Retain aggregate figures, never text.
+        DictationStatistics.record(this, text, statsAudioDurationMs,
+            android.os.SystemClock.elapsedRealtime() - statsTranscriptionStartMs, statsEngine)
 
         val voiceCommandsEnabled = prefs().getBoolean("voice_commands_enabled", false)
         if (voiceCommandsEnabled) {
