@@ -61,6 +61,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelContainer: LinearLayout
     private lateinit var voiceCommandsDetailContainer: LinearLayout
     private lateinit var triggerPhraseRowSub: TextView
+    private lateinit var statisticsContainer: LinearLayout
+    private lateinit var statisticsText: TextView
     private lateinit var tabLayout: TabLayout
     private lateinit var statusContainer: LinearLayout
     private lateinit var dictationContainer: LinearLayout
@@ -153,6 +155,7 @@ class MainActivity : AppCompatActivity() {
             addTab(newTab().setText(getString(R.string.tab_status)))
             addTab(newTab().setText(getString(R.string.tab_dictation)))
             addTab(newTab().setText(getString(R.string.tab_settings)))
+            addTab(newTab().setText("Statistiques"))
             addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
                 override fun onTabSelected(tab: TabLayout.Tab) { showTab(tab.position) }
                 override fun onTabUnselected(tab: TabLayout.Tab) {}
@@ -166,6 +169,23 @@ class MainActivity : AppCompatActivity() {
         statusContainer = vertical(0).apply { setPadding(0, dp(16), 0, 0) }
         dictationContainer = vertical(0)
         settingsContainer = vertical(0)
+        statisticsContainer = vertical(0).apply { setPadding(dp(24), dp(24), dp(24), dp(24)) }
+        statisticsText = TextView(this).apply { textSize = 17f }
+        statisticsContainer.addView(statisticsText)
+        statisticsContainer.addView(MaterialButton(this).apply {
+            text = "Réinitialiser les statistiques"
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Effacer les statistiques ?")
+                    .setMessage("Les compteurs locaux seront définitivement effacés.")
+                    .setPositiveButton("Effacer") { _, _ ->
+                        DictationStatistics.clear(this@MainActivity)
+                        statisticsText.text = DictationStatistics.summary(this@MainActivity)
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        })
 
         // [ui] Each section's rows sit on a rounded panel (see group()).
         // Rows, handlers and the references refresh() uses are unchanged;
@@ -585,6 +605,7 @@ class MainActivity : AppCompatActivity() {
         outer.addView(statusContainer)
         outer.addView(dictationContainer)
         outer.addView(settingsContainer)
+        outer.addView(statisticsContainer)
         showTab(0)
 
         setContentView(ScrollView(this).apply {
@@ -599,7 +620,7 @@ class MainActivity : AppCompatActivity() {
         refresh()
     }
 
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() { super.onResume(); refresh(); statisticsText.text = DictationStatistics.summary(this) }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
     }
@@ -608,6 +629,8 @@ class MainActivity : AppCompatActivity() {
         statusContainer.visibility = if (index == 0) View.VISIBLE else View.GONE
         dictationContainer.visibility = if (index == 1) View.VISIBLE else View.GONE
         settingsContainer.visibility = if (index == 2) View.VISIBLE else View.GONE
+        statisticsContainer.visibility = if (index == 3) View.VISIBLE else View.GONE
+        if (index == 3) statisticsText.text = DictationStatistics.summary(this)
     }
 
     // --- Model Rows ---
