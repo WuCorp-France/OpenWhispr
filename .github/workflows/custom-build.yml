@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -39,3 +39,16 @@ jobs:
           if-no-files-found: error
       - name: Run unit tests (reported separately)
         run: ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: Publish directly downloadable APK (pre-release)
+        if: github.ref == 'refs/heads/feature/dictation-statistics'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: stats-preview-${{ github.run_number }}
+          name: OpenWispr WuCorp - test build ${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Experimental Android APK with local dictation statistics.
+            Debug-signed build; not yet tested on a physical device.
+            Download the .apk directly under Assets, without ZIP extraction.
+          files: app/build/outputs/apk/debug/app-debug.apk
