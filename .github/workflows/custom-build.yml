@@ -1,0 +1,54 @@
+name: Verify custom statistics APK
+on:
+  push:
+    branches:
+      - feature/dictation-statistics
+      - custom
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Install Android SDK 35
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n1)"
+          if [ -z "$SDKMANAGER" ]; then echo "sdkmanager not found"; exit 1; fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+      - name: Upload debug APK (short retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwispr-wucorp-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 1
+          if-no-files-found: error
+      - name: Run unit tests (reported separately)
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: Publish directly downloadable APK (pre-release)
+        if: github.ref == 'refs/heads/feature/dictation-statistics'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: stats-preview-${{ github.run_number }}
+          name: OpenWispr WuCorp - test build ${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Experimental Android APK with local dictation statistics.
+            Debug-signed build; not yet tested on a physical device.
+            Download the .apk directly under Assets, without ZIP extraction.
+          files: app/build/outputs/apk/debug/app-debug.apk
