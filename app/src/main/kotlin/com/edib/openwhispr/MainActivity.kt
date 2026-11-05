@@ -340,6 +340,14 @@ class MainActivity : AppCompatActivity() {
         postGroup.addView(customInstructionsRow)
         dictationContainer.addView(postGroup)
 
+        dictationContainer.addView(sectionHeader("Mode rédaction soutenue"))
+        dictationContainer.addView(group().apply {
+            addView(settingsRow(
+                "Personnaliser la rédaction",
+                "Configurer le style appliqué par le bouton plume. Par défaut : registre élégant et soutenu."
+            ) { promptStyledDictationInstructions() })
+        })
+
         dictationContainer.addView(sectionHeader(getString(R.string.voice_commands)))
         val voiceGroup = group()
 
@@ -1407,6 +1415,30 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton(getString(R.string.save)) { _, _ ->
                 prefs().edit().putString("custom_instructions", input.text.toString().trim()).apply()
                 refresh()
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .create()
+        showResizingDialog(dialog)
+    }
+
+    private fun promptStyledDictationInstructions() {
+        val input = EditText(this).apply {
+            hint = StyledDictation.DEFAULT_INSTRUCTIONS
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 5
+            maxLines = 10
+            setText(prefs().getString(StyledDictation.PROMPT_PREF, StyledDictation.DEFAULT_INSTRUCTIONS))
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Instructions du mode soutenu")
+            .setMessage("Ce prompt est utilisé uniquement lorsque tu appuies sur le bouton plume. La dictée normale ne change pas.")
+            .setView(scrollableDialogContent(input))
+            .setPositiveButton(getString(R.string.save)) { _, _ ->
+                prefs().edit().putString(StyledDictation.PROMPT_PREF, input.text.toString().trim()).apply()
+            }
+            .setNeutralButton("Réinitialiser") { _, _ ->
+                prefs().edit().remove(StyledDictation.PROMPT_PREF).apply()
             }
             .setNegativeButton(getString(R.string.cancel), null)
             .create()
