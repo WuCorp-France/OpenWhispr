@@ -104,6 +104,8 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var accessibilityFocusSignal = false
     private var imeVisibleSignal = false
     private var button: ImageView? = null
+    private var styledButton: ImageView? = null
+    private var styledRecording = false
     // [ui] Smoothed recording level for the voice-reactive overlay (main thread).
     private var audioLevel = 0f
     private var spinner: ProgressBar? = null
@@ -415,6 +417,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun buttonSizePx(dpValue: Int): Int = (dpValue * dp).toInt()
+
     fun refreshBubbleSize() {
         handler.post {
             try {
@@ -428,7 +432,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                     lp.x, lp.y, screenW, screenH, ringSize, margin
                 )
 
-                lp.width = ringSize
+                lp.width = ringSize * 2
                 lp.height = ringSize
                 lp.x = position.x
                 lp.y = position.y
@@ -443,6 +447,22 @@ class WhisperAccessibilityService : AccessibilityService() {
                     buttonParams.height = buttonSize
                     button?.layoutParams = buttonParams
                 }
+                (button?.layoutParams as? FrameLayout.LayoutParams)?.let { mainParams ->
+                    mainParams.leftMargin = (ringSize - buttonSizePx(dimensions.buttonDp)) / 2
+                    button?.layoutParams = mainParams
+                }
+                (styledButton?.layoutParams as? FrameLayout.LayoutParams)?.let { styledParams ->
+                    styledParams.width = buttonSizePx(dimensions.buttonDp)
+                    styledParams.height = buttonSizePx(dimensions.buttonDp)
+                    styledParams.leftMargin = ringSize + (ringSize - buttonSizePx(dimensions.buttonDp)) / 2
+                    styledButton?.layoutParams = styledParams
+                }
+                styledButton?.setPadding(
+                    (dimensions.paddingDp * dp).toInt(),
+                    (dimensions.paddingDp * dp).toInt(),
+                    (dimensions.paddingDp * dp).toInt(),
+                    (dimensions.paddingDp * dp).toInt()
+                )
                 button?.setPadding(
                     (dimensions.paddingDp * dp).toInt(),
                     (dimensions.paddingDp * dp).toInt(),
@@ -578,9 +598,22 @@ class WhisperAccessibilityService : AccessibilityService() {
             background = circle(COLOR_IDLE)
         }
 
+        val styledImg = ImageView(this).apply {
+            setImageResource(android.R.drawable.ic_menu_edit)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(pad, pad, pad, pad)
+            background = circle(COLOR_IDLE)
+            contentDescription = "Dictée soutenue"
+        }
+
         val overlay = BubbleOverlay(this).apply {
             addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
-            addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.CENTER))
+            addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.START or Gravity.CENTER_VERTICAL).apply {
+                leftMargin = (ringSize - buttonSize) / 2
+            })
+            addView(styledImg, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.START or Gravity.CENTER_VERTICAL).apply {
+                leftMargin = ringSize + (ringSize - buttonSize) / 2
+            })
             contentDescription = getString(R.string.overlay_content_description)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
             isFocusable = true
@@ -598,13 +631,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val params = WindowManager.LayoutParams(
-            ringSize, ringSize,
+            ringSize * 2, ringSize,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            val home = savedHomePosition(ringSize)
+            val home = savedHomePosition(ringSize * 2)
             x = home.x
             y = home.y
         }
@@ -640,7 +673,7 @@ class WhisperAccessibilityService : AccessibilityService() {
                 MotionEvent.ACTION_UP -> {
                     val moved = abs(ev.rawX - touchX) + abs(ev.rawY - touchY)
                     if (moved < BubbleSize.dimensions(currentBubbleSizePercent()).tapThresholdDp * dp) {
-                        v.performClick()
+                        onTap(styled = ev.x >= ringSize)
                     } else {
                         params.x = BubbleSize.snappedX(params.x, params.width, screenW, margin)
                         params.y = BubbleSize.clampPosition(
@@ -682,6 +715,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         wm.addView(feedback, feedbackParams)
         overlayView = overlay
         button = img
+        styledButton = styledImg
         spinner = ring
         feedbackView = feedback
         layoutParams = params
@@ -699,6 +733,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             feedbackView = null
         }
         button = null
+        styledButton = null
         spinner = null
         layoutParams = null
         feedbackLayoutParams = null
@@ -726,9 +761,12 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun setRecordingLook(recording: Boolean) {
         handler.post {
             val b = button ?: return@post
-            b.background = if (recording) circle(COLOR_IDLE, COLOR_REC_ACCENT, (1.5f * dp).toInt())
-                           else circle(COLOR_IDLE)
-            b.imageTintList = if (recording) ColorStateList.valueOf(COLOR_REC_ACCENT) else null
+            val active = if (styledRecording) styledButton else b
+            for (icon in listOfNotNull(b, styledButton)) {
+                val selected = recording && icon == active
+                icon.background = if (selected) circle(COLOR_IDLE, COLOR_REC_ACCENT, (1.5f * dp).toInt()) else circle(COLOR_IDLE)
+                icon.imageTintList = if (selected) ColorStateList.valueOf(COLOR_REC_ACCENT) else null
+            }
             audioLevel = 0f
             b.animate().cancel()
             b.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
@@ -805,9 +843,9 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     // --- State machine ---
 
-    private fun onTap() {
+    private fun onTap(styled: Boolean = false) {
         when (state) {
-            State.IDLE -> startRecording()
+            State.IDLE -> startRecording(styled)
             State.RECORDING -> stopAndTranscribe()
             State.TRANSCRIBING -> {}
         }
@@ -818,7 +856,21 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var statsTranscriptionStartMs = 0L
     private var statsEngine = "cloud"
 
-    private fun startRecording() {
+    private fun startRecording(styled: Boolean = false) {
+        styledRecording = styled
+        if (styled) {
+            val cfg = CleanupProviderConfig.fromPreferences(
+                prefs().getString("cleanup_provider", null),
+                prefs().getString("cleanup_base_url", null),
+                prefs().getString("cleanup_model", null),
+            )
+            val key = if (cfg.provider == CleanupProviderConfig.Provider.GROQ)
+                SecureKeyStorage.groqApiKey(this) else SecureKeyStorage.cleanupApiKey(this)
+            if (key.isBlank()) {
+                toast("Le mode soutenu nécessite une clé API de correction.")
+                return
+            }
+        }
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             toast(getString(R.string.grant_audio_permission)); return
@@ -989,7 +1041,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         DictationStatistics.record(this, text, statsAudioDurationMs,
             android.os.SystemClock.elapsedRealtime() - statsTranscriptionStartMs, statsEngine)
 
-        val voiceCommandsEnabled = prefs().getBoolean("voice_commands_enabled", false)
+        val voiceCommandsEnabled = !styledRecording && prefs().getBoolean("voice_commands_enabled", false)
         if (voiceCommandsEnabled) {
             val trigger = prefs().getString("command_trigger_phrase", getString(R.string.default_trigger_phrase))
                 ?: getString(R.string.default_trigger_phrase)
@@ -1005,7 +1057,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             }
         }
 
-        val usePostProcessing = prefs().getBoolean("use_post_processing", false)
+        val usePostProcessing = styledRecording || prefs().getBoolean("use_post_processing", false)
         val cleanupConfig = CleanupProviderConfig.fromPreferences(
             prefs().getString("cleanup_provider", null),
             prefs().getString("cleanup_base_url", null),
@@ -1026,16 +1078,21 @@ class WhisperAccessibilityService : AccessibilityService() {
 
             val customInstructions = prefs().getString("custom_instructions", "") ?: ""
             val vocabulary = Dictionary.load(prefs())
-            val prompt = PostProcessor.effectivePrompt(customInstructions, vocabulary)
+            val isStyled = styledRecording
+            val prompt = if (isStyled) StyledDictation.prompt(
+                prefs().getString(StyledDictation.PROMPT_PREF, "").orEmpty(), vocabulary
+            ) else PostProcessor.effectivePrompt(customInstructions, vocabulary)
 
-            PostProcessor.process(text, prompt, apiKey, cleanupConfig) { result ->
+            val onComplete: (PostProcessor.Result) -> Unit = { result ->
                 handler.post {
                     val cleaned = result.text?.trim()
                     if (cleaned == "EMPTY") {
                         // Model correctly identified filler-only/no-speech audio;
                         // don't literally type the word "EMPTY" into the field.
                         toast(getString(R.string.no_speech_detected))
-                    } else if (!cleaned.isNullOrBlank() && PostProcessor.looksGenerated(text, cleaned)) {
+                    } else if (!cleaned.isNullOrBlank() &&
+                        (if (isStyled) StyledDictation.isSuspicious(text, cleaned)
+                        else PostProcessor.looksGenerated(text, cleaned))) {
                         // [cleanup] The model wrote or rewrote content instead of
                         // cleaning (e.g. drafted the email you described). Never
                         // insert that; insert your own words instead.
@@ -1054,6 +1111,8 @@ class WhisperAccessibilityService : AccessibilityService() {
                     goIdle()
                 }
             }
+            if (isStyled) PostProcessor.processStyled(text, prompt, apiKey, cleanupConfig, onComplete)
+            else PostProcessor.process(text, prompt, apiKey, cleanupConfig, onComplete)
         } else {
             handler.post {
                 injectText(text)
