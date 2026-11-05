@@ -607,7 +607,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
 
         val overlay = BubbleOverlay(this).apply {
-            addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER))
+            addView(ring, FrameLayout.LayoutParams(ringSize, ringSize, Gravity.START or Gravity.CENTER_VERTICAL))
             addView(img, FrameLayout.LayoutParams(buttonSize, buttonSize, Gravity.START or Gravity.CENTER_VERTICAL).apply {
                 leftMargin = (ringSize - buttonSize) / 2
             })
@@ -781,6 +781,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     private fun setBusy(visible: Boolean) {
         handler.post {
+            spinner?.translationX = if (styledRecording) (layoutParams?.height ?: 0).toFloat() else 0f
             spinner?.visibility = if (visible) View.VISIBLE else View.GONE
         }
     }
