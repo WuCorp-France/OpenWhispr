@@ -128,6 +128,68 @@ class WhisperAccessibilityService : AccessibilityService() {
             feedbackView?.visibility = View.GONE
         }?.start()
     }
+
+    /** On Android and HyperOS, the accessibility window must be physically
+     * detached when locked, otherwise it can survive into Always-On Display. */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF, Intent.ACTION_DREAMING_STARTED -> onScreenUnavailable()
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT, Intent.ACTION_DREAMING_STOPPED ->
+                    if (deviceReadyForOverlay()) refreshAccessibilityFocusSignal() else onScreenUnavailable()
+            }
+        }
+    }
+
+    private fun deviceReadyForOverlay(): Boolean {
+        val interactive = getSystemService(PowerManager::class.java)?.isInteractive != false
+        val unlocked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != true
+        return interactive && unlocked
+    }
+
+    private fun registerScreenReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_DREAMING_STARTED)
+            addAction(Intent.ACTION_DREAMING_STOPPED)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33)
+                registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            else
+                registerReceiver(screenReceiver, filter)
+            screenReceiverRegistered = true
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Screen receiver unavailable; periodic device-state check remains", e)
+        }
+    }
+
+    private fun onScreenUnavailable() {
+        if (state != State.IDLE) {
+            dictationSessionId++ // ignore outstanding cloud/local callbacks
+            state = State.IDLE
+            val recorder = audioRecord
+            audioRecord = null
+            pcmStream = null
+            try { recorder?.stop() } catch (_: IllegalStateException) { }
+            try { recorder?.release() } catch (_: IllegalStateException) { }
+        }
+        accessibilityFocusSignal = false
+        imeVisibleSignal = false
+        handler.removeCallbacks(overlayVisibilityDebounce)
+        handler.removeCallbacks(hideFeedback)
+        feedbackView?.animate()?.cancel()
+        feedbackView?.visibility = View.GONE
+        overlayShown = false
+        removePositionPreview()
+        removeOverlay()
+    }
+
+    private fun isCurrentSession(session: Long): Boolean =
+        dictationSessionId == session && state == State.TRANSCRIBING && deviceReadyForOverlay()
+
     private val focusPoller = object : Runnable {
         override fun run() {
             refreshAccessibilityFocusSignal()
@@ -154,7 +216,8 @@ class WhisperAccessibilityService : AccessibilityService() {
             stopTone = null
             Log.w(TAG, "Recording stop tone unavailable", e)
         }
-        showOverlay()
+        registerScreenReceiver()
+        if (deviceReadyForOverlay()) showOverlay()
         startForegroundNotification()
         updateOverlayVisibility()
         handler.post(focusPoller)
@@ -178,6 +241,10 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        if (screenReceiverRegistered) {
+            try { unregisterReceiver(screenReceiver) } catch (_: IllegalArgumentException) { }
+            screenReceiverRegistered = false
+        }
         removePositionPreview()
         stopTone?.release()
         stopTone = null
