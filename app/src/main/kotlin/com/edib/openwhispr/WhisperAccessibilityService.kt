@@ -1,11 +1,15 @@
 package com.edib.openwhispr
 
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -21,6 +25,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import android.os.PowerManager
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
@@ -57,10 +62,10 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         // How often we re-check the focused node as a failsafe, in case an
         // app never fires a focus-related accessibility event at all.
-        private const val FOCUS_POLL_MS = 500L
+        private const val FOCUS_POLL_MS = 200L
 
         // A focus/keyboard change must hold this long before the overlay shows or hides.
-        private const val OVERLAY_DEBOUNCE_MS = 300L
+        private const val OVERLAY_DEBOUNCE_MS = 60L
 
         // Placeholder circle shown by Settings while choosing the bubble position.
         private const val PREVIEW_FILL = 0x552F80ED
@@ -91,7 +96,9 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private var state = State.IDLE
+    @Volatile private var state = State.IDLE
+    @Volatile private var dictationSessionId = 0L
+    private var screenReceiverRegistered = false
     private var overlayView: FrameLayout? = null
     private var overlayShown = false
 
