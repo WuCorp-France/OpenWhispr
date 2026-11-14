@@ -1,11 +1,15 @@
 package com.edib.openwhispr
 
 import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -21,6 +25,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
+import android.os.PowerManager
 import android.text.InputType
 import android.util.Log
 import android.view.Gravity
@@ -57,10 +62,10 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         // How often we re-check the focused node as a failsafe, in case an
         // app never fires a focus-related accessibility event at all.
-        private const val FOCUS_POLL_MS = 500L
+        private const val FOCUS_POLL_MS = 200L
 
         // A focus/keyboard change must hold this long before the overlay shows or hides.
-        private const val OVERLAY_DEBOUNCE_MS = 300L
+        private const val OVERLAY_DEBOUNCE_MS = 60L
 
         // Placeholder circle shown by Settings while choosing the bubble position.
         private const val PREVIEW_FILL = 0x552F80ED
@@ -91,7 +96,9 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private var state = State.IDLE
+    @Volatile private var state = State.IDLE
+    @Volatile private var dictationSessionId = 0L
+    private var screenReceiverRegistered = false
     private var overlayView: FrameLayout? = null
     private var overlayShown = false
 
@@ -121,6 +128,68 @@ class WhisperAccessibilityService : AccessibilityService() {
             feedbackView?.visibility = View.GONE
         }?.start()
     }
+
+    /** On Android and HyperOS, the accessibility window must be physically
+     * detached when locked, otherwise it can survive into Always-On Display. */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF, Intent.ACTION_DREAMING_STARTED -> onScreenUnavailable()
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT, Intent.ACTION_DREAMING_STOPPED ->
+                    if (deviceReadyForOverlay()) refreshAccessibilityFocusSignal() else onScreenUnavailable()
+            }
+        }
+    }
+
+    private fun deviceReadyForOverlay(): Boolean {
+        val interactive = getSystemService(PowerManager::class.java)?.isInteractive != false
+        val unlocked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != true
+        return interactive && unlocked
+    }
+
+    private fun registerScreenReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_DREAMING_STARTED)
+            addAction(Intent.ACTION_DREAMING_STOPPED)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 33)
+                registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            else
+                registerReceiver(screenReceiver, filter)
+            screenReceiverRegistered = true
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Screen receiver unavailable; periodic device-state check remains", e)
+        }
+    }
+
+    private fun onScreenUnavailable() {
+        if (state != State.IDLE) {
+            dictationSessionId++ // ignore outstanding cloud/local callbacks
+            state = State.IDLE
+            val recorder = audioRecord
+            audioRecord = null
+            pcmStream = null
+            try { recorder?.stop() } catch (_: IllegalStateException) { }
+            try { recorder?.release() } catch (_: IllegalStateException) { }
+        }
+        accessibilityFocusSignal = false
+        imeVisibleSignal = false
+        handler.removeCallbacks(overlayVisibilityDebounce)
+        handler.removeCallbacks(hideFeedback)
+        feedbackView?.animate()?.cancel()
+        feedbackView?.visibility = View.GONE
+        overlayShown = false
+        removePositionPreview()
+        removeOverlay()
+    }
+
+    private fun isCurrentSession(session: Long): Boolean =
+        dictationSessionId == session && state == State.TRANSCRIBING && deviceReadyForOverlay()
+
     private val focusPoller = object : Runnable {
         override fun run() {
             refreshAccessibilityFocusSignal()
@@ -147,7 +216,8 @@ class WhisperAccessibilityService : AccessibilityService() {
             stopTone = null
             Log.w(TAG, "Recording stop tone unavailable", e)
         }
-        showOverlay()
+        registerScreenReceiver()
+        if (deviceReadyForOverlay()) showOverlay()
         startForegroundNotification()
         updateOverlayVisibility()
         handler.post(focusPoller)
@@ -171,6 +241,10 @@ class WhisperAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        if (screenReceiverRegistered) {
+            try { unregisterReceiver(screenReceiver) } catch (_: IllegalArgumentException) { }
+            screenReceiverRegistered = false
+        }
         removePositionPreview()
         stopTone?.release()
         stopTone = null
@@ -285,6 +359,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     // --- Overlay visibility (multi-signal, OR'd together) ---
 
     private fun refreshAccessibilityFocusSignal() {
+        if (!deviceReadyForOverlay()) {
+            onScreenUnavailable()
+            return
+        }
         try {
             val root = rootInActiveWindow
             val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -321,7 +399,7 @@ class WhisperAccessibilityService : AccessibilityService() {
      * flagRetrieveInteractiveWindows; without it the list is empty. */
     private fun isKeyboardWindowShown(): Boolean =
         try {
-            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD && (it.isActive || it.isFocused) } == true
         } catch (e: Exception) {
             false
         }
@@ -336,10 +414,22 @@ class WhisperAccessibilityService : AccessibilityService() {
     }
 
     private fun wantsOverlay(): Boolean =
-        masterEnabled() && (accessibilityFocusSignal || imeVisibleSignal || state != State.IDLE)
+        OverlayVisibilityPolicy.shouldShow(
+            enabled = masterEnabled(),
+            deviceUnlocked = deviceReadyForOverlay(),
+            keyboardOnly = prefs().getBoolean("overlay_require_keyboard", true),
+            keyboardVisible = imeVisibleSignal || isKeyboardWindowShown(),
+            inputFocused = accessibilityFocusSignal,
+            dictationActive = state != State.IDLE,
+        )
 
     private fun updateOverlayVisibility() {
+        if (!deviceReadyForOverlay()) {
+            onScreenUnavailable()
+            return
+        }
         val shouldShow = wantsOverlay()
+        if (shouldShow && overlayView == null) showOverlay()
         handler.removeCallbacks(overlayVisibilityDebounce)
         if (shouldShow == overlayShown) {
             // Self-heal: the view can drift from overlayShown (e.g. after an app
@@ -347,9 +437,8 @@ class WhisperAccessibilityService : AccessibilityService() {
             if (shouldShow && overlayView?.visibility != View.VISIBLE) animateOverlayIn()
             return
         }
-        // Only act once the new state has held for OVERLAY_DEBOUNCE_MS, so rapid
-        // focus flapping between apps doesn't restart the fades.
-        handler.postDelayed(overlayVisibilityDebounce, OVERLAY_DEBOUNCE_MS)
+        if (shouldShow) applyOverlayVisibility()
+        else handler.postDelayed(overlayVisibilityDebounce, OVERLAY_DEBOUNCE_MS)
     }
 
     private val overlayVisibilityDebounce = Runnable { applyOverlayVisibility() }
@@ -374,6 +463,7 @@ class WhisperAccessibilityService : AccessibilityService() {
      * animation on a window the system hasn't drawn yet can stall at alpha 0. */
     private fun animateOverlayIn() {
         handler.post {
+            if (!wantsOverlay()) return@post
             val view = overlayView ?: return@post
             view.animate().cancel()
             view.visibility = View.VISIBLE
@@ -386,15 +476,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         handler.post {
             val view = overlayView ?: return@post
             view.animate().cancel()
-            view.animate()
-                .alpha(0f)
-                .setDuration(FADE_OUT_MS)
-                .setInterpolator(AccelerateInterpolator())
-                .withEndAction {
-                    view.visibility = View.INVISIBLE
-                    setTouchable(false)
-                }
-                .start()
+            // Gone immediately: no animation callbacks that might stall on HyperOS.
+            view.visibility = View.GONE
+            view.alpha = 0f
+            setTouchable(false)
+            handler.removeCallbacks(hideFeedback)
+            feedbackView?.animate()?.cancel()
+            feedbackView?.visibility = View.GONE
         }
     }
 
@@ -725,11 +813,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun removeOverlay() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         overlayView?.let {
-            wm.removeView(it)
+            it.animate().cancel()
+            try { wm.removeViewImmediate(it) } catch (_: IllegalArgumentException) { }
             overlayView = null
         }
         feedbackView?.let {
-            wm.removeView(it)
+            it.animate().cancel()
+            try { wm.removeViewImmediate(it) } catch (_: IllegalArgumentException) { }
             feedbackView = null
         }
         button = null
@@ -845,6 +935,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     // --- State machine ---
 
     private fun onTap(styled: Boolean = false) {
+        if (!deviceReadyForOverlay()) return
         when (state) {
             State.IDLE -> startRecording(styled)
             State.RECORDING -> stopAndTranscribe()
@@ -896,6 +987,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         pcmStream = ByteArrayOutputStream()
         audioRecord!!.startRecording()
         state = State.RECORDING
+        dictationSessionId++
         statsRecordingStartMs = android.os.SystemClock.elapsedRealtime()
         setBusy(false)
         setRecordingLook(true) // [ui]
@@ -947,16 +1039,17 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val useLocal = prefs().getBoolean("use_local", true)
         val local = localTranscriber
+        val session = dictationSessionId
 
         // [privacy] Local mode never falls back to the cloud: previously a
         // missing/unloaded model sent the recording to Groq without notice.
         // Now the audio is discarded and the user is told why.
         if (useLocal && local != null) {
-            transcribeLocal(pcm, local)
+            transcribeLocal(pcm, local, session)
         } else if (useLocal) {
             reset(localUnavailableMessage())
         } else {
-            transcribeApi(pcm)
+            transcribeApi(pcm, session)
         }
     }
 
@@ -972,7 +1065,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         return peak
     }
 
-    private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber) {
+    private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber, session: Long) {
         playRecordingStoppedTone()
         thread {
             try {
@@ -989,10 +1082,11 @@ class WhisperAccessibilityService : AccessibilityService() {
                 val ms = System.currentTimeMillis() - t0
                 Log.i(TAG, "Local transcription: ${ms}ms, ${samples.size / SAMPLE_RATE}s audio")
 
-                handleTranscriptionResult(text)
+                handleTranscriptionResult(text, session)
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.local_transcription_error, e.message ?: getString(R.string.unknown_error)))
                     goIdle()
                 }
@@ -1011,7 +1105,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun transcribeApi(pcm: ByteArray) {
+    private fun transcribeApi(pcm: ByteArray, session: Long) {
         val wav = WavWriter.encode(pcm)
         val apiKey = SecureKeyStorage.groqApiKey(this)
         if (apiKey.isBlank()) { reset(getString(R.string.set_groq_key)); return }
@@ -1019,9 +1113,10 @@ class WhisperAccessibilityService : AccessibilityService() {
         playRecordingStoppedTone()
         TranscriberClient.transcribe(wav, apiKey, Dictionary.load(prefs()), TranscriptionLanguages.saved(prefs())) { result ->
             if (result.text != null && result.text.isNotBlank()) {
-                handleTranscriptionResult(result.text)
+                handleTranscriptionResult(result.text, session)
             } else {
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.transcription_error, result.error ?: getString(R.string.empty_transcript)))
                     goIdle()
                 }
@@ -1029,9 +1124,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleTranscriptionResult(text: String?) {
+    private fun handleTranscriptionResult(text: String?, session: Long) {
+        if (!isCurrentSession(session)) return
         if (text.isNullOrBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.no_speech_detected))
                 goIdle()
             }
@@ -1048,12 +1145,12 @@ class WhisperAccessibilityService : AccessibilityService() {
                 ?: getString(R.string.default_trigger_phrase)
             val instruction = CommandProcessor.extractCommand(text, trigger)
             if (instruction != null) {
-                handleVoiceCommand(instruction)
+                handleVoiceCommand(instruction, session = session)
                 return
             }
             val trailing = CommandProcessor.extractTrailingCommand(text, trigger)
             if (trailing != null) {
-                handleVoiceCommand(trailing.instruction, trailing.content)
+                handleVoiceCommand(trailing.instruction, trailing.content, session)
                 return
             }
         }
@@ -1070,6 +1167,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         if (usePostProcessing) {
             if (apiKey.isBlank()) {
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.cleanup_needs_key))
                     injectText(text)
                     goIdle()
@@ -1086,6 +1184,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
             val onComplete: (PostProcessor.Result) -> Unit = { result ->
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     val cleaned = result.text?.trim()
                     if (cleaned == "EMPTY") {
                         // Model correctly identified filler-only/no-speech audio;
@@ -1116,6 +1215,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             else PostProcessor.process(text, prompt, apiKey, cleanupConfig, onComplete)
         } else {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 injectText(text)
                 goIdle()
             }
@@ -1128,10 +1228,11 @@ class WhisperAccessibilityService : AccessibilityService() {
      * field's entire content with the result. With [dictated] (text spoken
      * before the trigger phrase) the command runs on that text instead, and
      * the result is inserted like normal dictation. */
-    private fun handleVoiceCommand(instruction: String, dictated: String? = null) {
+    private fun handleVoiceCommand(instruction: String, dictated: String? = null, session: Long) {
         val apiKey = SecureKeyStorage.groqApiKey(this)
         if (apiKey.isBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.voice_commands_need_key))
                 goIdle()
             }
@@ -1139,6 +1240,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         if (instruction.isBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.no_command_after_trigger))
                 goIdle()
             }
@@ -1149,6 +1251,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         CommandProcessor.process(fieldText, instruction, apiKey) { result ->
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 val out = result.text?.trim()
                 when {
                     out.isNullOrBlank() ->
