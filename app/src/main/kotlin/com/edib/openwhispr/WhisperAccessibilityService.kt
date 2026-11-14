@@ -1040,16 +1040,17 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val useLocal = prefs().getBoolean("use_local", true)
         val local = localTranscriber
+        val session = dictationSessionId
 
         // [privacy] Local mode never falls back to the cloud: previously a
         // missing/unloaded model sent the recording to Groq without notice.
         // Now the audio is discarded and the user is told why.
         if (useLocal && local != null) {
-            transcribeLocal(pcm, local)
+            transcribeLocal(pcm, local, session)
         } else if (useLocal) {
             reset(localUnavailableMessage())
         } else {
-            transcribeApi(pcm)
+            transcribeApi(pcm, session)
         }
     }
 
@@ -1065,7 +1066,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         return peak
     }
 
-    private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber) {
+    private fun transcribeLocal(pcm: ByteArray, transcriber: LocalTranscriber, session: Long) {
         playRecordingStoppedTone()
         thread {
             try {
@@ -1082,10 +1083,11 @@ class WhisperAccessibilityService : AccessibilityService() {
                 val ms = System.currentTimeMillis() - t0
                 Log.i(TAG, "Local transcription: ${ms}ms, ${samples.size / SAMPLE_RATE}s audio")
 
-                handleTranscriptionResult(text)
+                handleTranscriptionResult(text, session)
             } catch (e: Exception) {
                 Log.e(TAG, "Local transcription failed", e)
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.local_transcription_error, e.message ?: getString(R.string.unknown_error)))
                     goIdle()
                 }
@@ -1104,7 +1106,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun transcribeApi(pcm: ByteArray) {
+    private fun transcribeApi(pcm: ByteArray, session: Long) {
         val wav = WavWriter.encode(pcm)
         val apiKey = SecureKeyStorage.groqApiKey(this)
         if (apiKey.isBlank()) { reset(getString(R.string.set_groq_key)); return }
@@ -1112,9 +1114,10 @@ class WhisperAccessibilityService : AccessibilityService() {
         playRecordingStoppedTone()
         TranscriberClient.transcribe(wav, apiKey, Dictionary.load(prefs()), TranscriptionLanguages.saved(prefs())) { result ->
             if (result.text != null && result.text.isNotBlank()) {
-                handleTranscriptionResult(result.text)
+                handleTranscriptionResult(result.text, session)
             } else {
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.transcription_error, result.error ?: getString(R.string.empty_transcript)))
                     goIdle()
                 }
@@ -1122,9 +1125,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleTranscriptionResult(text: String?) {
+    private fun handleTranscriptionResult(text: String?, session: Long) {
+        if (!isCurrentSession(session)) return
         if (text.isNullOrBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.no_speech_detected))
                 goIdle()
             }
@@ -1141,12 +1146,12 @@ class WhisperAccessibilityService : AccessibilityService() {
                 ?: getString(R.string.default_trigger_phrase)
             val instruction = CommandProcessor.extractCommand(text, trigger)
             if (instruction != null) {
-                handleVoiceCommand(instruction)
+                handleVoiceCommand(instruction, session = session)
                 return
             }
             val trailing = CommandProcessor.extractTrailingCommand(text, trigger)
             if (trailing != null) {
-                handleVoiceCommand(trailing.instruction, trailing.content)
+                handleVoiceCommand(trailing.instruction, trailing.content, session)
                 return
             }
         }
@@ -1163,6 +1168,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         if (usePostProcessing) {
             if (apiKey.isBlank()) {
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     toast(getString(R.string.cleanup_needs_key))
                     injectText(text)
                     goIdle()
@@ -1179,6 +1185,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
             val onComplete: (PostProcessor.Result) -> Unit = { result ->
                 handler.post {
+                    if (!isCurrentSession(session)) return@post
                     val cleaned = result.text?.trim()
                     if (cleaned == "EMPTY") {
                         // Model correctly identified filler-only/no-speech audio;
@@ -1209,6 +1216,7 @@ class WhisperAccessibilityService : AccessibilityService() {
             else PostProcessor.process(text, prompt, apiKey, cleanupConfig, onComplete)
         } else {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 injectText(text)
                 goIdle()
             }
@@ -1221,10 +1229,11 @@ class WhisperAccessibilityService : AccessibilityService() {
      * field's entire content with the result. With [dictated] (text spoken
      * before the trigger phrase) the command runs on that text instead, and
      * the result is inserted like normal dictation. */
-    private fun handleVoiceCommand(instruction: String, dictated: String? = null) {
+    private fun handleVoiceCommand(instruction: String, dictated: String? = null, session: Long) {
         val apiKey = SecureKeyStorage.groqApiKey(this)
         if (apiKey.isBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.voice_commands_need_key))
                 goIdle()
             }
@@ -1232,6 +1241,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         if (instruction.isBlank()) {
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 toast(getString(R.string.no_command_after_trigger))
                 goIdle()
             }
@@ -1242,6 +1252,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         CommandProcessor.process(fieldText, instruction, apiKey) { result ->
             handler.post {
+                if (!isCurrentSession(session)) return@post
                 val out = result.text?.trim()
                 when {
                     out.isNullOrBlank() ->
