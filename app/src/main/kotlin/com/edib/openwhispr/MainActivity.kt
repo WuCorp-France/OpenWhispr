@@ -396,6 +396,22 @@ class MainActivity : AppCompatActivity() {
         settingsContainer.addView(group().apply { addView(keyRow) })
 
         settingsContainer.addView(sectionHeader(getString(R.string.bubble_size_section)))
+        val keyboardOnlySwitch = MaterialSwitch(this).apply {
+            isChecked = prefs().getBoolean("overlay_require_keyboard", true)
+            isClickable = false
+        }
+        settingsContainer.addView(group().apply {
+            addView(settingsRow(
+                getString(R.string.overlay_keyboard_only_title),
+                getString(R.string.overlay_keyboard_only_summary),
+                keyboardOnlySwitch
+            ) {
+                val value = !keyboardOnlySwitch.isChecked
+                keyboardOnlySwitch.isChecked = value
+                prefs().edit().putBoolean("overlay_require_keyboard", value).apply()
+                WhisperAccessibilityService.instance?.refreshMasterEnabled()
+            })
+        })
         val bubbleSizePanel = vertical(dp(24), dp(8))
         val bubbleSizeLabel = TextView(this).apply {
             text = getString(R.string.bubble_size)
