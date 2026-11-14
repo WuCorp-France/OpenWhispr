@@ -38,6 +38,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Preview build installs alongside the existing WuCorp app.
+            // Debug keystores on GitHub-hosted runners are not stable.
+            applicationIdSuffix = ".overlaypreview"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }
