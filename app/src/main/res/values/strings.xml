@@ -270,4 +270,6 @@ Reason: %1$s</string>
     <string name="migration_message_not_saved">OpenWispr 4 is signed with a new key, so it can\'t be installed over version 3. Steps: 1) Back up your settings with the button below. 2) Uninstall OpenWispr 3. 3) Download %1$s from the GitHub release page and open it to install. 4) On first launch, restore your backup.</string>
     <string name="migration_uninstall">Uninstall OpenWispr 3</string>
     <string name="migration_back_up_first">Back up first</string>
+    <string name="overlay_keyboard_only_title">Show bubble only while keyboard is visible</string>
+    <string name="overlay_keyboard_only_summary">Hide the floating microphone as soon as the keyboard closes. Disable for apps that do not show a keyboard.</string>
 </resources>
