@@ -399,7 +399,7 @@ class WhisperAccessibilityService : AccessibilityService() {
      * flagRetrieveInteractiveWindows; without it the list is empty. */
     private fun isKeyboardWindowShown(): Boolean =
         try {
-            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD && (it.isActive || it.isFocused) } == true
         } catch (e: Exception) {
             false
         }
@@ -413,16 +413,15 @@ class WhisperAccessibilityService : AccessibilityService() {
         updateOverlayVisibility()
     }
 
-    private fun wantsOverlay(): Boolean {
-        val requireKeyboard = prefs().getBoolean("overlay_require_keyboard", true)
-        val inputReady = if (requireKeyboard) {
-            imeVisibleSignal || isKeyboardWindowShown()
-        } else {
-            accessibilityFocusSignal || imeVisibleSignal
-        }
-        return masterEnabled() && deviceReadyForOverlay() &&
-            (state != State.IDLE || inputReady)
-    }
+    private fun wantsOverlay(): Boolean =
+        OverlayVisibilityPolicy.shouldShow(
+            enabled = masterEnabled(),
+            deviceUnlocked = deviceReadyForOverlay(),
+            keyboardOnly = prefs().getBoolean("overlay_require_keyboard", true),
+            keyboardVisible = imeVisibleSignal || isKeyboardWindowShown(),
+            inputFocused = accessibilityFocusSignal,
+            dictationActive = state != State.IDLE,
+        )
 
     private fun updateOverlayVisibility() {
         if (!deviceReadyForOverlay()) {
