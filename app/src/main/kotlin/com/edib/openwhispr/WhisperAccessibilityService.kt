@@ -359,6 +359,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     // --- Overlay visibility (multi-signal, OR'd together) ---
 
     private fun refreshAccessibilityFocusSignal() {
+        if (!deviceReadyForOverlay()) {
+            onScreenUnavailable()
+            return
+        }
         try {
             val root = rootInActiveWindow
             val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -409,11 +413,24 @@ class WhisperAccessibilityService : AccessibilityService() {
         updateOverlayVisibility()
     }
 
-    private fun wantsOverlay(): Boolean =
-        masterEnabled() && (accessibilityFocusSignal || imeVisibleSignal || state != State.IDLE)
+    private fun wantsOverlay(): Boolean {
+        val requireKeyboard = prefs().getBoolean("overlay_require_keyboard", true)
+        val inputReady = if (requireKeyboard) {
+            imeVisibleSignal || isKeyboardWindowShown()
+        } else {
+            accessibilityFocusSignal || imeVisibleSignal
+        }
+        return masterEnabled() && deviceReadyForOverlay() &&
+            (state != State.IDLE || inputReady)
+    }
 
     private fun updateOverlayVisibility() {
+        if (!deviceReadyForOverlay()) {
+            onScreenUnavailable()
+            return
+        }
         val shouldShow = wantsOverlay()
+        if (shouldShow && overlayView == null) showOverlay()
         handler.removeCallbacks(overlayVisibilityDebounce)
         if (shouldShow == overlayShown) {
             // Self-heal: the view can drift from overlayShown (e.g. after an app
@@ -421,9 +438,8 @@ class WhisperAccessibilityService : AccessibilityService() {
             if (shouldShow && overlayView?.visibility != View.VISIBLE) animateOverlayIn()
             return
         }
-        // Only act once the new state has held for OVERLAY_DEBOUNCE_MS, so rapid
-        // focus flapping between apps doesn't restart the fades.
-        handler.postDelayed(overlayVisibilityDebounce, OVERLAY_DEBOUNCE_MS)
+        if (shouldShow) applyOverlayVisibility()
+        else handler.postDelayed(overlayVisibilityDebounce, OVERLAY_DEBOUNCE_MS)
     }
 
     private val overlayVisibilityDebounce = Runnable { applyOverlayVisibility() }
@@ -448,6 +464,7 @@ class WhisperAccessibilityService : AccessibilityService() {
      * animation on a window the system hasn't drawn yet can stall at alpha 0. */
     private fun animateOverlayIn() {
         handler.post {
+            if (!wantsOverlay()) return@post
             val view = overlayView ?: return@post
             view.animate().cancel()
             view.visibility = View.VISIBLE
@@ -460,15 +477,13 @@ class WhisperAccessibilityService : AccessibilityService() {
         handler.post {
             val view = overlayView ?: return@post
             view.animate().cancel()
-            view.animate()
-                .alpha(0f)
-                .setDuration(FADE_OUT_MS)
-                .setInterpolator(AccelerateInterpolator())
-                .withEndAction {
-                    view.visibility = View.INVISIBLE
-                    setTouchable(false)
-                }
-                .start()
+            // Gone immediately: no animation callbacks that might stall on HyperOS.
+            view.visibility = View.GONE
+            view.alpha = 0f
+            setTouchable(false)
+            handler.removeCallbacks(hideFeedback)
+            feedbackView?.animate()?.cancel()
+            feedbackView?.visibility = View.GONE
         }
     }
 
@@ -799,11 +814,13 @@ class WhisperAccessibilityService : AccessibilityService() {
     private fun removeOverlay() {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         overlayView?.let {
-            wm.removeView(it)
+            it.animate().cancel()
+            try { wm.removeViewImmediate(it) } catch (_: IllegalArgumentException) { }
             overlayView = null
         }
         feedbackView?.let {
-            wm.removeView(it)
+            it.animate().cancel()
+            try { wm.removeViewImmediate(it) } catch (_: IllegalArgumentException) { }
             feedbackView = null
         }
         button = null
@@ -919,6 +936,7 @@ class WhisperAccessibilityService : AccessibilityService() {
     // --- State machine ---
 
     private fun onTap(styled: Boolean = false) {
+        if (!deviceReadyForOverlay()) return
         when (state) {
             State.IDLE -> startRecording(styled)
             State.RECORDING -> stopAndTranscribe()
@@ -970,6 +988,7 @@ class WhisperAccessibilityService : AccessibilityService() {
         pcmStream = ByteArrayOutputStream()
         audioRecord!!.startRecording()
         state = State.RECORDING
+        dictationSessionId++
         statsRecordingStartMs = android.os.SystemClock.elapsedRealtime()
         setBusy(false)
         setRecordingLook(true) // [ui]
