@@ -38,6 +38,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusDotView: View
     private var statusAction: (() -> Unit)? = null
     private lateinit var cloudRowSub: TextView
+    private lateinit var cloudContainer: LinearLayout
+    private lateinit var cloudModelContainer: LinearLayout
+    private var cloudExpanded = false
+    private var cloudModelIds: List<String> = listOf(TranscriberClient.DEFAULT_MODEL)
+    private var cloudModelsLoaded = false
+    private var cloudModelStatus: Int? = null
     private lateinit var audioRow: LinearLayout
     private lateinit var audioRowSub: TextView
     private lateinit var audioDot: View
@@ -61,6 +67,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modelContainer: LinearLayout
     private lateinit var voiceCommandsDetailContainer: LinearLayout
     private lateinit var triggerPhraseRowSub: TextView
+    private lateinit var statisticsContainer: LinearLayout
+    private lateinit var statisticsText: TextView
     private lateinit var tabLayout: TabLayout
     private lateinit var statusContainer: LinearLayout
     private lateinit var dictationContainer: LinearLayout
@@ -153,6 +161,7 @@ class MainActivity : AppCompatActivity() {
             addTab(newTab().setText(getString(R.string.tab_status)))
             addTab(newTab().setText(getString(R.string.tab_dictation)))
             addTab(newTab().setText(getString(R.string.tab_settings)))
+            addTab(newTab().setText("Statistiques"))
             addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
                 override fun onTabSelected(tab: TabLayout.Tab) { showTab(tab.position) }
                 override fun onTabUnselected(tab: TabLayout.Tab) {}
@@ -166,6 +175,23 @@ class MainActivity : AppCompatActivity() {
         statusContainer = vertical(0).apply { setPadding(0, dp(16), 0, 0) }
         dictationContainer = vertical(0)
         settingsContainer = vertical(0)
+        statisticsContainer = vertical(0).apply { setPadding(dp(24), dp(24), dp(24), dp(24)) }
+        statisticsText = TextView(this).apply { textSize = 17f }
+        statisticsContainer.addView(statisticsText)
+        statisticsContainer.addView(MaterialButton(this).apply {
+            text = "Réinitialiser les statistiques"
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Effacer les statistiques ?")
+                    .setMessage("Les compteurs locaux seront définitivement effacés.")
+                    .setPositiveButton("Effacer") { _, _ ->
+                        DictationStatistics.clear(this@MainActivity)
+                        statisticsText.text = DictationStatistics.summary(this@MainActivity)
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        })
 
         // [ui] Each section's rows sit on a rounded panel (see group()).
         // Rows, handlers and the references refresh() uses are unchanged;
@@ -276,6 +302,13 @@ class MainActivity : AppCompatActivity() {
         cloudRowSub = cloudRow.findViewWithTag("subtitle")
         dictationContainer.addView(group().apply { addView(cloudRow) })
 
+        cloudModelContainer = vertical(0)
+        cloudContainer = vertical(0).apply {
+            addView(sectionHeader(getString(R.string.cloud_model)))
+            addView(cloudModelContainer)
+        }
+        dictationContainer.addView(cloudContainer)
+
         modelContainer = vertical(0)
         modelContainer.addView(sectionHeader(getString(R.string.local_models)))
         val modelGroup = group()
@@ -319,6 +352,14 @@ class MainActivity : AppCompatActivity() {
         customInstructionsRowSub.ellipsize = android.text.TextUtils.TruncateAt.END
         postGroup.addView(customInstructionsRow)
         dictationContainer.addView(postGroup)
+
+        dictationContainer.addView(sectionHeader("Mode rédaction soutenue"))
+        dictationContainer.addView(group().apply {
+            addView(settingsRow(
+                "Personnaliser la rédaction",
+                "Configurer le style appliqué par le bouton plume. Par défaut : registre élégant et soutenu."
+            ) { promptStyledDictationInstructions() })
+        })
 
         dictationContainer.addView(sectionHeader(getString(R.string.voice_commands)))
         val voiceGroup = group()
@@ -368,6 +409,22 @@ class MainActivity : AppCompatActivity() {
         settingsContainer.addView(group().apply { addView(keyRow) })
 
         settingsContainer.addView(sectionHeader(getString(R.string.bubble_size_section)))
+        val keyboardOnlySwitch = MaterialSwitch(this).apply {
+            isChecked = prefs().getBoolean("overlay_require_keyboard", true)
+            isClickable = false
+        }
+        settingsContainer.addView(group().apply {
+            addView(settingsRow(
+                getString(R.string.overlay_keyboard_only_title),
+                getString(R.string.overlay_keyboard_only_summary),
+                keyboardOnlySwitch
+            ) {
+                val value = !keyboardOnlySwitch.isChecked
+                keyboardOnlySwitch.isChecked = value
+                prefs().edit().putBoolean("overlay_require_keyboard", value).apply()
+                WhisperAccessibilityService.instance?.refreshMasterEnabled()
+            })
+        })
         val bubbleSizePanel = vertical(dp(24), dp(8))
         val bubbleSizeLabel = TextView(this).apply {
             text = getString(R.string.bubble_size)
@@ -396,13 +453,16 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(LP_MATCH, dp(64))
         }
         bubbleSizeLabel.labelFor = bubbleSizeSlider.id
+        val applyBubbleSize = Runnable { WhisperAccessibilityService.instance?.refreshBubbleSize() }
         bubbleSizeSlider.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val percent = BubbleSize.sliderPercent(value.toInt())
                 prefs().edit().putInt(BubbleSize.PREFERENCE_KEY, percent).apply()
                 selectedBubbleSize.text = localizedBubbleLabel(percent)
                 slider.contentDescription = "${getString(R.string.bubble_size_accessibility)}, ${localizedBubbleDescription(percent)}"
-                WhisperAccessibilityService.instance?.refreshBubbleSize()
+                WhisperAccessibilityService.instance?.previewBubbleSize(percent)
+                slider.removeCallbacks(applyBubbleSize)
+                slider.postDelayed(applyBubbleSize, 500)
             }
         }
         val initialBubbleSize = currentBubbleSizePercent()
@@ -585,6 +645,7 @@ class MainActivity : AppCompatActivity() {
         outer.addView(statusContainer)
         outer.addView(dictationContainer)
         outer.addView(settingsContainer)
+        outer.addView(statisticsContainer)
         showTab(0)
 
         setContentView(ScrollView(this).apply {
@@ -599,7 +660,7 @@ class MainActivity : AppCompatActivity() {
         refresh()
     }
 
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() { super.onResume(); refresh(); statisticsText.text = DictationStatistics.summary(this) }
     override fun onRequestPermissionsResult(c: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r); refresh()
     }
@@ -608,6 +669,8 @@ class MainActivity : AppCompatActivity() {
         statusContainer.visibility = if (index == 0) View.VISIBLE else View.GONE
         dictationContainer.visibility = if (index == 1) View.VISIBLE else View.GONE
         settingsContainer.visibility = if (index == 2) View.VISIBLE else View.GONE
+        statisticsContainer.visibility = if (index == 3) View.VISIBLE else View.GONE
+        if (index == 3) statisticsText.text = DictationStatistics.summary(this)
     }
 
     // --- Model Rows ---
@@ -855,6 +918,8 @@ class MainActivity : AppCompatActivity() {
         statusAction = if (ready) null else action
         statusRow.isClickable = statusAction != null
 
+        cloudContainer.visibility = if (useLocal) View.GONE else View.VISIBLE
+        if (!useLocal) renderCloudModels()
         // [ui] The cloud switch's subtitle says where audio goes.
         cloudRowSub.text = if (useLocal) "Off: transcribed on this phone"
                            else "On: audio is sent to Groq (needs API key)"
@@ -924,23 +989,25 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (info != null) {
-                    android.app.AlertDialog.Builder(this)
-                        .setTitle(R.string.update_available)
-                        .setMessage(
-                            buildString {
-                                append(getString(R.string.update_available_message, info.version, currentVersion))
-                                append("\n\n${getString(R.string.whats_new)}:\n")
-                                append(
-                                    info.notes?.takeIf { it.isNotBlank() }
-                                        ?: getString(R.string.no_release_notes)
-                                )
-                            }
-                        )
-                        .setPositiveButton(getString(R.string.update)) { _, _ -> downloadAndInstallUpdate(info) }
-                        // [security] Full release page (complete changelog) before deciding.
-                        .setNeutralButton(getString(R.string.view_on_github)) { _, _ -> openReleasePage(info.url) }
-                        .setNegativeButton(getString(R.string.later), null)
-                        .show()
+                    val view = layoutInflater.inflate(R.layout.dialog_update, null)
+                    view.findViewById<TextView>(R.id.update_dialog_message).text =
+                        getString(R.string.update_available_message, info.version, currentVersion)
+                    view.findViewById<TextView>(R.id.update_dialog_notes).text =
+                        info.notes?.takeIf { it.isNotBlank() } ?: getString(R.string.no_release_notes)
+                    val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                        .setView(view)
+                        .create()
+                    view.findViewById<MaterialButton>(R.id.update_dialog_update).setOnClickListener {
+                        dialog.dismiss()
+                        downloadAndInstallUpdate(info)
+                    }
+                    // [security] Full release page (complete changelog) before deciding.
+                    view.findViewById<MaterialButton>(R.id.update_dialog_github).setOnClickListener {
+                        dialog.dismiss()
+                        openReleasePage(info.url)
+                    }
+                    view.findViewById<MaterialButton>(R.id.update_dialog_later).setOnClickListener { dialog.dismiss() }
+                    dialog.show()
                 } else if (force) {
                     toast(getString(R.string.up_to_date, currentVersion))
                 }
@@ -983,12 +1050,18 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        toast(getString(R.string.downloading_update))
+        val screen = showUpdateDownload(info.version)
         // [security] Pass GitHub's published checksum; downloadApk only
         // returns a file if it matches.
-        UpdateChecker.downloadApk(this, apkUrl, info.apkSha256) { file, error ->
+        UpdateChecker.downloadApk(
+            this,
+            apkUrl,
+            info.apkSha256,
+            onProgress = { done, total -> runOnUiThread { updateDownloadProgress(screen, done, total) } },
+        ) { file, error ->
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
+                hideUpdateDownload(screen)
                 if (file == null) {
                     // [security] A failed download or failed checksum both end
                     // here; nothing is installed. Offer the release page instead.
@@ -1000,9 +1073,48 @@ class MainActivity : AppCompatActivity() {
                         .show()
                     return@runOnUiThread
                 }
-                if (isMajorVersion4(info.version)) showMigrationToV4(info, file) else installApk(file)
+                // Only 3.x -> 4.x needs the uninstall step; 4.x -> 4.x installs over the top.
+                val installed = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName
+                } catch (e: Exception) {
+                    null
+                }
+                val needsMigration = isMajorVersion4(info.version) && installed?.let { !isMajorVersion4(it) } == true
+                if (needsMigration) showMigrationToV4(info, file) else installApk(file)
             }
         }
+    }
+
+    /** Full-screen download screen: wavy ring, percent and MB, Close. Closing it
+     * only hides the screen; the download keeps going and installs when done. */
+    private fun showUpdateDownload(version: String): View {
+        val content = findViewById<android.view.ViewGroup>(android.R.id.content)
+        val screen = layoutInflater.inflate(R.layout.update_download, content, false)
+        screen.findViewById<TextView>(R.id.update_subtitle).text = "OpenWispr · v${version.removePrefix("v")}"
+        // Set in code: the style's 48dp default was winning over the layout attribute.
+        screen.findViewById<com.google.android.material.progressindicator.CircularProgressIndicator>(R.id.update_progress).apply {
+            indicatorSize = dp(240)
+            trackThickness = dp(10)
+        }
+        screen.findViewById<MaterialButton>(R.id.update_close).setOnClickListener { hideUpdateDownload(screen) }
+        content.addView(screen)
+        return screen
+    }
+
+    private fun hideUpdateDownload(screen: View) {
+        (screen.parent as? android.view.ViewGroup)?.removeView(screen)
+    }
+
+    private fun updateDownloadProgress(screen: View, done: Long, total: Long) {
+        if (total <= 0) return
+        val percent = (done * 100 / total).toInt()
+        screen.findViewById<com.google.android.material.progressindicator.CircularProgressIndicator>(R.id.update_progress).apply {
+            isIndeterminate = false
+            setProgressCompat(percent, true)
+        }
+        screen.findViewById<TextView>(R.id.update_percent).text = "$percent%"
+        screen.findViewById<TextView>(R.id.update_size).text =
+            String.format(java.util.Locale.US, "%.1f / %.1f MB", done / 1e6, total / 1e6)
     }
 
     private fun openReleasePage(url: String) {
@@ -1390,6 +1502,30 @@ class MainActivity : AppCompatActivity() {
         showResizingDialog(dialog)
     }
 
+    private fun promptStyledDictationInstructions() {
+        val input = EditText(this).apply {
+            hint = StyledDictation.DEFAULT_INSTRUCTIONS
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 5
+            maxLines = 10
+            setText(prefs().getString(StyledDictation.PROMPT_PREF, StyledDictation.DEFAULT_INSTRUCTIONS))
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Instructions du mode soutenu")
+            .setMessage("Ce prompt est utilisé uniquement lorsque tu appuies sur le bouton plume. La dictée normale ne change pas.")
+            .setView(scrollableDialogContent(input))
+            .setPositiveButton(getString(R.string.save)) { _, _ ->
+                prefs().edit().putString(StyledDictation.PROMPT_PREF, input.text.toString().trim()).apply()
+            }
+            .setNeutralButton("Réinitialiser") { _, _ ->
+                prefs().edit().remove(StyledDictation.PROMPT_PREF).apply()
+            }
+            .setNegativeButton(getString(R.string.cancel), null)
+            .create()
+        showResizingDialog(dialog)
+    }
+
     private fun promptTriggerPhrase() {
         val input = EditText(this).apply {
             hint = getString(R.string.default_trigger_phrase)
@@ -1532,6 +1668,84 @@ class MainActivity : AppCompatActivity() {
         ta.recycle()
         return color
     }
+    private fun cloudModelId() =
+        TranscriberClient.modelId(prefs().getString(TranscriberClient.MODEL_PREF_KEY, null))
+
+    /** Expands or collapses the model list under the "Change" link. Opening it loads the list from Groq. */
+    private fun toggleCloudModelList() {
+        cloudExpanded = !cloudExpanded
+        if (cloudExpanded) loadCloudModels()
+        renderCloudModels()
+    }
+
+    private fun loadCloudModels() {
+        if (cloudModelsLoaded) return
+        val key = SecureKeyStorage.groqApiKey(this)
+        if (key.isBlank()) {
+            cloudModelStatus = R.string.cloud_model_needs_key
+            return
+        }
+        cloudModelStatus = R.string.cloud_model_loading
+        TranscriberClient.listModels(key) { ids, error ->
+            runOnUiThread {
+                cloudModelIds = (listOf(TranscriberClient.DEFAULT_MODEL) + ids).distinct()
+                cloudModelsLoaded = error == null
+                cloudModelStatus = if (error == null) null else R.string.cloud_model_load_failed
+                renderCloudModels()
+            }
+        }
+    }
+
+    /** The current choice shows as a row; "Change" opens the Groq list, "Use default" resets. */
+    private fun renderCloudModels() {
+        cloudModelContainer.removeAllViews()
+        val selected = cloudModelId()
+        val isDefault = selected == TranscriberClient.DEFAULT_MODEL
+
+        val change = TextView(this).apply {
+            text = getString(R.string.cloud_model_change)
+            setTextColor(attrColor(androidx.appcompat.R.attr.colorPrimary))
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { toggleCloudModelList() }
+        }
+        cloudModelContainer.addView(group().apply {
+            addView(settingsRow(selected, if (isDefault) getString(R.string.cloud_model_default) else "", change))
+        })
+
+        if (!cloudExpanded) return
+
+        val list = group()
+        cloudModelStatus?.let { list.addView(settingsRow(getString(it), "")) }
+        for (id in (cloudModelIds + selected).distinct()) {
+            val radio = MaterialRadioButton(this).apply {
+                isChecked = id == selected
+                isClickable = false
+            }
+            list.addView(settingsRow(id, if (id == TranscriberClient.DEFAULT_MODEL) getString(R.string.cloud_model_default) else "", radio) {
+                prefs().edit().putString(TranscriberClient.MODEL_PREF_KEY, id).apply()
+                cloudExpanded = false
+                refresh()
+            })
+        }
+        cloudModelContainer.addView(list)
+
+        val useDefault = TextView(this).apply {
+            text = getString(R.string.cloud_model_use_default)
+            setTextColor(attrColor(androidx.appcompat.R.attr.colorPrimary))
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener {
+                prefs().edit().putString(TranscriberClient.MODEL_PREF_KEY, TranscriberClient.DEFAULT_MODEL).apply()
+                cloudExpanded = false
+                refresh()
+            }
+        }
+        cloudModelContainer.addView(group().apply { addView(useDefault) })
+    }
+
     private fun cleanupProviderConfig() = CleanupProviderConfig.fromPreferences(
         prefs().getString("cleanup_provider", null),
         prefs().getString("cleanup_base_url", null),

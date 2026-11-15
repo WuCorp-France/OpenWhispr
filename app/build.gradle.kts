@@ -28,16 +28,21 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.edib.openwhispr"
+        applicationId = "fr.wucorp.openwhispr"
         minSdk = 30
         targetSdk = 35
-        versionCode = 40
-        versionName = "4.0.0"
+        versionCode = 46
+        versionName = "4.0.6-wucorp.2"
 
         ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
+        debug {
+            // Preview build installs alongside the existing WuCorp app.
+            // Debug keystores on GitHub-hosted runners are not stable.
+            applicationIdSuffix = ".upstream406preview"
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
         }
