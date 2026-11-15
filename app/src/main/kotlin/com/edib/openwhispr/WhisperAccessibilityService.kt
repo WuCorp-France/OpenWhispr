@@ -602,45 +602,69 @@ class WhisperAccessibilityService : AccessibilityService() {
     private var previewParams: WindowManager.LayoutParams? = null
     private val hidePositionPreview = Runnable { removePositionPreview() }
 
-    /** Shows a placeholder circle where the bubble would sit for [percent] and
-     * [onLeft], so Settings can preview a position before it is applied. It
-     * disappears on its own a moment after the last call. */
+    /** Preview the two-button capsule at the configured location. */
     fun previewPosition(percent: Int, onLeft: Boolean) {
         handler.post {
+            if (!deviceReadyForOverlay()) return@post
             try {
-                val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-                val size = layoutParams?.width
-                    ?: (BubbleSize.dimensions(currentBubbleSizePercent()).ringDp * dp).toInt()
+                val ring = (BubbleSize.dimensions(currentBubbleSizePercent()).ringDp * dp).toInt()
+                val width = layoutParams?.width ?: ring * 2
+                val height = layoutParams?.height ?: ring
                 val position = BubbleSize.positionFor(
-                    percent, onLeft, screenW, screenH, size, (MARGIN_DP * dp).toInt()
+                    percent, onLeft, screenW, screenH, width, (MARGIN_DP * dp).toInt()
                 )
-                val existing = previewView
-                val params = previewParams ?: WindowManager.LayoutParams(
-                    size, size,
-                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-                    PixelFormat.TRANSLUCENT
-                ).apply { gravity = Gravity.TOP or Gravity.START }
-                params.width = size
-                params.height = size
-                params.x = position.x
-                params.y = position.y
-                if (existing == null) {
-                    val circle = View(this).apply {
-                        background = circle(PREVIEW_FILL, PREVIEW_STROKE, (2 * dp).toInt())
-                    }
-                    wm.addView(circle, params)
-                    previewView = circle
-                    previewParams = params
-                } else {
-                    wm.updateViewLayout(existing, params)
-                }
-                handler.removeCallbacks(hidePositionPreview)
-                handler.postDelayed(hidePositionPreview, PREVIEW_HIDE_MS)
+                showPreviewCapsule(position.x, position.y, width, height)
             } catch (e: Exception) {
                 Log.e(TAG, "previewPosition failed", e)
             }
         }
+    }
+
+    /** Official v4.0.6 size preview adjusted for our pair of dictation buttons. */
+    fun previewBubbleSize(percent: Int) {
+        handler.post {
+            if (!deviceReadyForOverlay()) return@post
+            try {
+                val ring = (BubbleSize.dimensions(percent).ringDp * dp).toInt()
+                val width = ring * 2
+                val position = savedHomePosition(width)
+                showPreviewCapsule(position.x, position.y, width, ring)
+            } catch (e: Exception) {
+                Log.e(TAG, "previewBubbleSize failed", e)
+            }
+        }
+    }
+
+    private fun showPreviewCapsule(x: Int, y: Int, width: Int, height: Int) {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val existing = previewView
+        val params = previewParams ?: WindowManager.LayoutParams(
+            width, height,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        params.width = width
+        params.height = height
+        params.x = x
+        params.y = y
+        if (existing == null) {
+            val capsule = View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = height / 2f
+                    setColor(PREVIEW_FILL)
+                    setStroke((2 * dp).toInt(), PREVIEW_STROKE)
+                }
+            }
+            wm.addView(capsule, params)
+            previewView = capsule
+            previewParams = params
+        } else {
+            wm.updateViewLayout(existing, params)
+        }
+        handler.removeCallbacks(hidePositionPreview)
+        handler.postDelayed(hidePositionPreview, PREVIEW_HIDE_MS)
     }
 
     private fun removePositionPreview() {
@@ -1111,7 +1135,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         if (apiKey.isBlank()) { reset(getString(R.string.set_groq_key)); return }
 
         playRecordingStoppedTone()
-        TranscriberClient.transcribe(wav, apiKey, Dictionary.load(prefs()), TranscriptionLanguages.saved(prefs())) { result ->
+        val model = TranscriberClient.modelId(prefs().getString(TranscriberClient.MODEL_PREF_KEY, null))
+        TranscriberClient.transcribe(wav, apiKey, Dictionary.load(prefs()), TranscriptionLanguages.saved(prefs()), model) { result ->
             if (result.text != null && result.text.isNotBlank()) {
                 handleTranscriptionResult(result.text, session)
             } else {
@@ -1229,7 +1254,13 @@ class WhisperAccessibilityService : AccessibilityService() {
      * before the trigger phrase) the command runs on that text instead, and
      * the result is inserted like normal dictation. */
     private fun handleVoiceCommand(instruction: String, dictated: String? = null, session: Long) {
-        val apiKey = SecureKeyStorage.groqApiKey(this)
+        val cleanupConfig = CleanupProviderConfig.fromPreferences(
+            prefs().getString("cleanup_provider", null),
+            prefs().getString("cleanup_base_url", null),
+            prefs().getString("cleanup_model", null),
+        )
+        val apiKey = if (cleanupConfig.provider == CleanupProviderConfig.Provider.GROQ)
+            SecureKeyStorage.groqApiKey(this) else SecureKeyStorage.cleanupApiKey(this)
         if (apiKey.isBlank()) {
             handler.post {
                 if (!isCurrentSession(session)) return@post
@@ -1249,7 +1280,7 @@ class WhisperAccessibilityService : AccessibilityService() {
 
         val fieldText = dictated ?: currentFieldText()
 
-        CommandProcessor.process(fieldText, instruction, apiKey) { result ->
+        CommandProcessor.process(fieldText, instruction, apiKey, cleanupConfig) { result ->
             handler.post {
                 if (!isCurrentSession(session)) return@post
                 val out = result.text?.trim()

@@ -9,6 +9,29 @@ No internal/process notes (CI changes, release cleanup, repo housekeeping,
 etc.) -- if it wouldn't mean anything to someone who just installed the app,
 it doesn't belong here.
 
+## 4.0.6
+- Bubble size: a preview circle shows the new size where the bubble sits while you slide
+
+## 4.0.5
+- The update download screen shows a full-size progress ring with the percent and size centred in it
+- The update prompt matches the app's look
+
+## 4.0.4
+- Cloud transcription shows the model you're using. Tap Change to pick another Whisper model from Groq's list, or Use default to go back
+- The update download screen has a full-size progress ring and the update prompt uses the Material 3 dialog style
+
+## 4.0.3
+- Multilingual Whisper models (Whisper Base and Small) load and transcribe
+- Voice commands follow the cleanup service you set in Settings (Groq or an OpenAI-compatible provider), so they work without a Groq key
+- Cloud transcription: turn on Custom model to choose a Whisper model from Groq's list. The default stays the choice until you turn it on
+
+## 4.0.2
+- Updating within version 4 no longer asks you to uninstall the app
+- Update downloads show a progress screen with the percent and size downloaded
+
+## 4.0.1
+- The floating button appears as soon as you focus a text field, instead of a moment later
+
 ## 4.0.0
 - Release builds are now signed with a private key. Before updating, make a backup in Settings > Backup. Then uninstall the 3.x app and install this version: Android won't update an app signed with a different key, and this is the one-time switch. Restore your backup on first launch
 

@@ -5,6 +5,7 @@ on:
       - feature/dictation-statistics
       - feature/styled-dictation
       - feature/overlay-fast-hide
+      - feature/upstream-4.0.6-integration
       - custom
   workflow_dispatch:
 
@@ -42,15 +43,16 @@ jobs:
       - name: Run unit tests (reported separately)
         run: ./gradlew :app:testDebugUnitTest --no-daemon
       - name: Publish directly downloadable APK (pre-release)
-        if: github.ref == 'refs/heads/feature/overlay-fast-hide'
+        if: github.ref == 'refs/heads/feature/upstream-4.0.6-integration'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: overlay-preview-${{ github.run_number }}
-          name: OpenWispr WuCorp - overlay test build ${{ github.run_number }}
+          tag_name: upstream406-preview-${{ github.run_number }}
+          name: OpenWispr WuCorp 4.0.6 integration - test ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
           prerelease: true
           generate_release_notes: false
           body: |
-            Experimental Android APK with fast overlay dismissal, lockscreen/AOD protection, styled dictation and statistics.
+            Experimental OpenWispr 4.0.6 integration with on-device statistics, stylish dictation, keyboard/AOD overlay fixes. Safe side-by-side preview app ID.
             Debug-signed build; not yet tested on a physical device.
             Download the .apk directly under Assets, without ZIP extraction.
           files: app/build/outputs/apk/debug/app-debug.apk
