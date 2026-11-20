@@ -410,7 +410,7 @@ class MainActivity : AppCompatActivity() {
 
         settingsContainer.addView(sectionHeader(getString(R.string.bubble_size_section)))
         val keyboardOnlySwitch = MaterialSwitch(this).apply {
-            isChecked = prefs().getBoolean("overlay_require_keyboard", true)
+            isChecked = prefs().getBoolean("overlay_require_keyboard", false)
             isClickable = false
         }
         settingsContainer.addView(group().apply {

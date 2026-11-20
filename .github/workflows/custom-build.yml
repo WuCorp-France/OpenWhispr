@@ -6,6 +6,7 @@ on:
       - feature/styled-dictation
       - feature/overlay-fast-hide
       - feature/upstream-4.0.6-integration
+      - fix/xiaomi-overlay-visible-406
       - custom
   workflow_dispatch:
 
@@ -43,16 +44,16 @@ jobs:
       - name: Run unit tests (reported separately)
         run: ./gradlew :app:testDebugUnitTest --no-daemon
       - name: Publish directly downloadable APK (pre-release)
-        if: github.ref == 'refs/heads/feature/upstream-4.0.6-integration'
+        if: github.ref == 'refs/heads/fix/xiaomi-overlay-visible-406'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: upstream406-preview-${{ github.run_number }}
-          name: OpenWispr WuCorp 4.0.6 integration - test ${{ github.run_number }}
+          tag_name: xiaomi-overlay-fix-${{ github.run_number }}
+          name: OpenWispr 4.0.6 - Xiaomi mic overlay fix ${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
           generate_release_notes: false
           body: |
-            Experimental OpenWispr 4.0.6 integration with on-device statistics, stylish dictation, keyboard/AOD overlay fixes. Safe side-by-side preview app ID.
+            OpenWispr 4.0.6 WuCorp preview: restores microphone overlay on Xiaomi/HyperOS, retains quick keyboard dismissal and AOD protection. Installs alongside the existing app.
             Debug-signed build; not yet tested on a physical device.
             Download the .apk directly under Assets, without ZIP extraction.
           files: app/build/outputs/apk/debug/app-debug.apk

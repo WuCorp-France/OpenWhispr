@@ -110,6 +110,10 @@ class WhisperAccessibilityService : AccessibilityService() {
     // foreground app cooperating with accessibility at all).
     private var accessibilityFocusSignal = false
     private var imeVisibleSignal = false
+    // Track a real keyboard appearance/disappearance separately from an editor
+    // keeping focus (which happens after the keyboard is dismissed on HyperOS).
+    private var keyboardWasVisible = false
+    private var keyboardDismissed = false
     private var button: ImageView? = null
     private var styledButton: ImageView? = null
     private var styledRecording = false
@@ -178,6 +182,8 @@ class WhisperAccessibilityService : AccessibilityService() {
         }
         accessibilityFocusSignal = false
         imeVisibleSignal = false
+        keyboardWasVisible = false
+        keyboardDismissed = false
         handler.removeCallbacks(overlayVisibilityDebounce)
         handler.removeCallbacks(hideFeedback)
         feedbackView?.animate()?.cancel()
@@ -369,8 +375,20 @@ class WhisperAccessibilityService : AccessibilityService() {
             // The foreground app's own tree is only one witness: web-based
             // composers (the Claude app's Code tab) often don't report an
             // editable focus at all. The other two come from the system.
-            accessibilityFocusSignal = (focused != null && isEditableTextField(focused)) ||
-                hasActiveTextInput() || isKeyboardWindowShown()
+            val editorFocused = (focused != null && isEditableTextField(focused)) ||
+                hasActiveTextInput()
+            val keyboardVisible = imeVisibleSignal || isKeyboardWindowShown()
+            if (editorFocused && !accessibilityFocusSignal) {
+                keyboardDismissed = false
+            }
+            if (keyboardVisible) {
+                keyboardWasVisible = true
+                keyboardDismissed = false
+            } else if (keyboardWasVisible && state == State.IDLE) {
+                keyboardWasVisible = false
+                keyboardDismissed = true
+            }
+            accessibilityFocusSignal = editorFocused
             focused?.recycle()
             root?.recycle()
         } catch (e: Exception) {
@@ -399,7 +417,9 @@ class WhisperAccessibilityService : AccessibilityService() {
      * flagRetrieveInteractiveWindows; without it the list is empty. */
     private fun isKeyboardWindowShown(): Boolean =
         try {
-            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD && (it.isActive || it.isFocused) } == true
+            // An IME accessibility window may be visible but neither active
+            // nor focused (notably with Xiaomi/HyperOS keyboards).
+            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
         } catch (e: Exception) {
             false
         }
@@ -417,10 +437,11 @@ class WhisperAccessibilityService : AccessibilityService() {
         OverlayVisibilityPolicy.shouldShow(
             enabled = masterEnabled(),
             deviceUnlocked = deviceReadyForOverlay(),
-            keyboardOnly = prefs().getBoolean("overlay_require_keyboard", true),
+            keyboardOnly = prefs().getBoolean("overlay_require_keyboard", false),
             keyboardVisible = imeVisibleSignal || isKeyboardWindowShown(),
             inputFocused = accessibilityFocusSignal,
             dictationActive = state != State.IDLE,
+            keyboardDismissed = keyboardDismissed,
         )
 
     private fun updateOverlayVisibility() {

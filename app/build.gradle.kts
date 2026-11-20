@@ -31,8 +31,8 @@ android {
         applicationId = "fr.wucorp.openwhispr"
         minSdk = 30
         targetSdk = 35
-        versionCode = 46
-        versionName = "4.0.6-wucorp.2"
+        versionCode = 47
+        versionName = "4.0.6-wucorp.3"
 
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -41,7 +41,7 @@ android {
         debug {
             // Preview build installs alongside the existing WuCorp app.
             // Debug keystores on GitHub-hosted runners are not stable.
-            applicationIdSuffix = ".upstream406preview"
+            applicationIdSuffix = ".xiaomioverlayfix"
         }
         release {
             signingConfig = signingConfigs.getByName("release")
