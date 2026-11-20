@@ -25,6 +25,34 @@ class OverlayVisibilityPolicyTest {
     @Test fun keepsBubbleVisibleDuringActiveDictationWhileUnlocked() {
         assertTrue(visible(dictationActive = true))
     }
+    @Test fun regressionNoMicWhenHyperOsCannotReportFocusedImeWindow() {
+        assertTrue(visible(keyboardOnly = false, inputFocused = true, keyboardVisible = false))
+    }
+    @Test fun keyboardClosedSuppressesStaleEditorFocus() {
+        assertFalse(OverlayVisibilityPolicy.shouldShow(
+            enabled = true,
+            deviceUnlocked = true,
+            keyboardOnly = false,
+            keyboardVisible = false,
+            inputFocused = true,
+            dictationActive = false,
+            keyboardDismissed = true
+        ))
+    }
+    @Test fun openingKeyboardAgainOverridesDismissal() {
+        assertTrue(OverlayVisibilityPolicy.shouldShow(
+            enabled = true,
+            deviceUnlocked = true,
+            keyboardOnly = false,
+            keyboardVisible = true,
+            inputFocused = true,
+            dictationActive = false,
+            keyboardDismissed = true
+        ))
+    }
+    @Test fun strictKeyboardModeDoesNotUseFocusFallback() {
+        assertFalse(visible(keyboardOnly = true, inputFocused = true, keyboardVisible = false))
+    }
     @Test fun optionalCompatibilityModeAllowsFocusedFieldsWithoutKeyboard() {
         assertTrue(visible(keyboardOnly = false, inputFocused = true))
     }
